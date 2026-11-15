@@ -1,0 +1,3 @@
+The write-up (index.html, REPORT.md) is licensed under CC BY 4.0.
+repro/repro.py and make_proof.py are licensed under MIT.
+routing-leaves.json is copied from labrat-boar-fork (MIT) for the golden check.

@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LabRat attaches the wrong emergency number</title>
+  <meta name="description" content="Audit finding for poidh #1520: LabRat's EmergencyNumbers table returns the first listed country, not the one you asked about." />
+  <style>
+    :root { --bg:#111318; --ink:#eceef1; --muted:#9aa3b0; --panel:#1c1f26; --line:#2c313c; --red:#e85d5d; --green:#3eb47e; --amber:#e8b050; --blue:#82aae6; }
+    * { box-sizing: border-box; }
+    body { margin:0; background:var(--bg); color:var(--ink); font: 18px/1.55 Inter, "IBM Plex Sans", "Source Sans 3", system-ui, sans-serif; }
+    main { max-width: 820px; margin: 0 auto; padding: 48px 24px 96px; }
+    h1 { font-size: 2.1rem; line-height: 1.2; margin: 0 0 8px; letter-spacing: -0.02em; }
+    h2 { font-size: 1.35rem; margin: 2.2em 0 0.6em; }
+    .kicker { color: var(--muted); font-size: 0.92rem; margin-bottom: 28px; }
+    a { color: var(--blue); }
+    p, li { color: #d5d8de; }
+    code, pre { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 0.86em; }
+    pre { background: var(--panel); padding: 16px 18px; border-radius: 10px; overflow: auto; border: 1px solid var(--line); }
+    img.figure { width: 100%; border-radius: 12px; border: 1px solid var(--line); margin: 8px 0 12px; background: #16181d; }
+    figcaption { color: var(--muted); font-size: 0.88rem; margin-bottom: 28px; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.92rem; margin: 12px 0 24px; }
+    th { text-align: left; color: var(--muted); font-weight: 600; font-size: 0.75rem; letter-spacing: 0.06em; text-transform: uppercase; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+    td { padding: 10px; vertical-align: top; border-bottom: 1px solid var(--line); }
+    .wrong { color: var(--red); }
+    .ok { color: var(--green); }
+    .want { color: var(--blue); }
+    .pin { color: var(--amber); font-size: 0.78rem; }
+    footer { margin-top: 64px; color: var(--muted); font-size: 0.88rem; border-top: 1px solid var(--line); padding-top: 20px; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>LabRat attaches the wrong emergency number</h1>
+  <p class="kicker">poidh bounty <a href="https://poidh.xyz/base/bounty/1520">#1520</a> (on-chain id 534) · audit of RatLab / LabRat, record 1.1.2 · 15 November 2026, Asia/Calcutta</p>
+
+  <p>One finding, in the shipped health-gate path. It is not a rediscovery of the already-claimed HealthGate issues (eval-runner <code>local-</code> pack ids, provenance licensing, spelled-out units, the 39.5 °C conversion, the 42 °C cap, or self-harm). Those live in other parts of the gate. This one is <code>EmergencyNumbers.kt</code>.</p>
+
+  <h2>The finding</h2>
+  <p>When LabRat refuses to give health advice from memory, it is supposed to attach the emergency numbers for the country the question names. The author added that table because a no-source health answer had already given the <em>wrong</em> country's numbers (<code>EmergencyNumbers.kt</code> lines 3–7).</p>
+  <p>The implementation walks a hard-coded list in a fixed order and returns the <strong>first row whose regex matches anywhere in the question</strong>:</p>
+  <pre>val hit = COUNTRIES.firstOrNull { it.names.containsMatchIn(text) } ?: return null
+return "Emergency — ${hit.en}"</pre>
+  <p>Thailand is first in the table. Japan is before China. The United Kingdom is before Australia. Sentence order does not matter. The country the user is asking about does not matter. A second country in the same question is dropped.</p>
+  <p><code>HealthGate.fixedText</code> is the only production caller (<code>HealthGate.kt:42</code>). It fires when the turn is classified as a health question and no health-pack passage was kept. Questions that contain the word “emergency” are health questions (<code>QueryContext.kt</code>, <code>HEALTH</code> includes <code>emergency</code>). The author's own comment says a question like “What emergency numbers do I need in Thailand?” found nothing in the library, which is why the table exists. So this is exactly the path those questions take.</p>
+
+  <h2>Evidence</h2>
+  <figure>
+    <img class="figure" src="proof/emergency-table.png" alt="Table of questions showing LabRat returning the wrong country's emergency numbers, including cases pinned in the project's golden tests." width="1600" height="1100" />
+    <figcaption>Figure. A Python port of the same patterns reproduces all 853 golden <code>emergencyLine</code> cases, then the contrast questions in the table.</figcaption>
+  </figure>
+
+  <p>A Python port of the same patterns and the same first-hit walk reproduces <strong>all 853</strong> <code>emergencyLine</code> goldens in <code>routing-leaves.json</code> with zero mismatches. The project's own goldens already pin several of the failures. New contrast questions, run on the same function, make the table-order rule obvious.</p>
+
+  <table>
+    <thead><tr><th>Question</th><th>Function returns</th><th>Should return</th></tr></thead>
+    <tbody>
+      <tr><td>What are the emergency numbers in Japan and China?<br><span class="pin">Pinned in routing-leaves.json</span></td><td class="wrong">Japan 110 / 119. China omitted.</td><td class="want">Both countries</td></tr>
+      <tr><td>What are the emergency numbers in China and Japan?</td><td class="wrong">Japan again. Reversing the sentence does not change the result.</td><td class="want">Both, or China first if sentence order were used</td></tr>
+      <tr><td>I'm flying from Thailand to Japan. I was bitten by a snake. What number do I call in Japan?</td><td class="wrong">Thailand 191 / 1669 / 199 / 1155</td><td class="want">Japan 110 / 119</td></tr>
+      <tr><td>I have chest pain in the United States after a trip to Thailand. What should I do?</td><td class="wrong">Thailand, not 911</td><td class="want">United States 911</td></tr>
+      <tr><td>China's consulate in Chiang Mai, Northern Thailand.<br><span class="pin">Pinned in routing-leaves.json</span></td><td class="wrong">Thailand. The subject of the sentence is China.</td><td class="want">China, or no line</td></tr>
+      <tr><td>New South Wales is Australia, not the United Kingdom…<br><span class="pin">Pinned in routing-leaves.json</span></td><td class="wrong">United Kingdom 999 / 112</td><td class="want">Australia, or both</td></tr>
+      <tr><td>Which emergency numbers should I know in the US?</td><td class="wrong">None. “the U.S.” matches; “the US” does not.</td><td class="want">United States 911</td></tr>
+      <tr><td>Which emergency numbers should I know in the U.S.?<br><span class="pin">Pinned in routing-leaves.json</span></td><td class="ok">United States 911</td><td class="ok">United States 911 (control)</td></tr>
+    </tbody>
+  </table>
+
+  <p>The “in the US” miss is a separate hole in the United States regex:</p>
+  <pre>\\b(united states|usa|estados unidos)\\b|\\bu\\.s\\.(?:a\\.?)?(?![a-z])</pre>
+  <p>It accepts “USA”, “U.S.”, “U.S.A.” and “United States”, but not the usual unpunctuated form “the US”. “America” is also absent. A bare <code>\\bus\\b</code> would be the wrong fix — it would match the pronoun in “tell us” — but <code>\\bthe us\\b</code> / <code>\\bin the us\\b</code> would cover the common phrasing without that collision.</p>
+  <p>Related, and weaker: the same United States regex fires on “1 u.s. dollar equals 150 yen; …” and returns “Emergency — United States: 911.” That case is also pinned in the golden file. It only reaches a user if the health gate also fires on that turn, so it is a property of the matcher, not a demonstrated product path.</p>
+  <p>The function also returns a country line for any text that merely <em>mentions</em> a listed name, including “What is the capital of Australia?” and “Is tipping expected in restaurants in Portugal?” (both pinned). Those two are not health questions, so <code>fixedText</code> does not use the result. They still show that the matcher has no notion of “this question is asking about this country.”</p>
+
+  <h2>Why it matters</h2>
+  <p>This is the safety fallback: the app has already decided it will not answer from memory, and the one factual line it adds is the emergency number. Attaching the <em>wrong</em> country's numbers is worse than attaching none. The generic <code>NO_SOURCE</code> text already says “911 in the US, 112 in Europe.” A Thailand line on a question about a snake bite <em>in Japan</em>, or on chest pain <em>in the United States</em>, can send someone to a number that does not exist where they are.</p>
+  <p>The feature was written specifically to stop the model giving the wrong country's numbers. The table-order walk reintroduces that failure for any question that names more than one listed country, and the golden tests have frozen several of those answers in place.</p>
+
+  <h2>A practical fix</h2>
+  <ol>
+    <li>Collect every country the text actually names, not the first row in the file.</li>
+    <li>Prefer a locative (“in Japan”, “in the United States”, “for Japan”) over a mere mention (“after a trip to Thailand”, “not the United Kingdom”).</li>
+    <li>If more than one country still remains, list all of them. Do not pick a winner by file order.</li>
+    <li>Add <code>\\bthe us\\b</code> / <code>\\bin the us\\b</code> so “the US” matches the same way “the U.S.” does. Do not add a bare <code>\\bus\\b</code>.</li>
+    <li>Keep currency phrases such as “u.s. dollar” from counting as a country hit.</li>
+    <li>Update the goldens that currently pin Japan-only for “Japan and China”, Thailand for the China-in-Chiang-Mai sentence, and the UK for the “NSW is Australia, not the United Kingdom” contrast.</li>
+  </ol>
+
+  <h2>Limits</h2>
+  <ul>
+    <li>I did not run the 3&nbsp;GB APK on a phone. <code>EmergencyNumbers.emergencyNumbersLine</code> is a pure function; the 853 golden cases and the contrast questions above are a reproduction of that function, which is what <code>HealthGate.fixedText</code> concatenates onto the refusal text.</li>
+    <li>I am not claiming a new HealthGate classification bug. “What are the emergency numbers in Japan and China?” is a health question because it contains “emergency”, which is by design.</li>
+    <li>I have not measured how often multi-country questions appear in DEVICE-FINAL. The intended use of this table <em>is</em> “what emergency numbers do I need in X?”, and the Japan/China golden is already such a question.</li>
+  </ul>
+
+  <h2>How to reproduce</h2>
+  <pre>python3 repro/repro.py repro/routing-leaves.json</pre>
+  <p>The script must report <code>853 checked, 0 mismatches</code>, then print the contrast cases in the table above. Source: <a href="https://github.com/r4topunk/labrat-boar-fork/tree/606923a7064c8f176b45123f716c7d82ad234144">labrat-boar-fork @606923a</a>. Markdown twin: <a href="REPORT.md">REPORT.md</a>.</p>
+
+  <footer>
+    Write-up CC BY 4.0. <code>repro.py</code> MIT. LabRat is MIT; <code>routing-leaves.json</code> is copied from labrat-boar-fork for the golden check.
+  </footer>
+</main>
+</body>
+</html>
